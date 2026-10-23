@@ -1,5 +1,4 @@
 import os
-import requests
 import pandas as pd
 import numpy as np
 import joblib
@@ -9,51 +8,72 @@ from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.impute import SimpleImputer
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
-from sklearn.linear_model import LogisticRegression
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report, roc_auc_score, accuracy_score
+from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_absolute_error, r2_score
 
 
-def download_dataset():
-    """Downloads the Telco Customer Churn dataset if not present locally."""
-    os.makedirs('data', exist_ok=True)
-    file_path = 'data/Telco-Customer-Churn.csv'
+def generate_food_delivery_data(samples=5000):
+    """Generates a realistic Zomato/Swiggy delivery dataset."""
+    np.random.seed(42)
     
-    if not os.path.exists(file_path):
-        print("Downloading Telco Customer Churn dataset...")
-        url = "https://raw.githubusercontent.com/IBM/telco-customer-churn-on-icp4d/master/data/Telco-Customer-Churn.csv"
-        response = requests.get(url)
-        with open(file_path, 'wb') as f:
-            f.write(response.content)
-        print("Download complete.")
-    else:
-        print("Dataset found locally.")
-        
-    return file_path
+    distance_km = np.random.uniform(1.0, 20.0, samples)
+    prep_time_min = np.random.uniform(5.0, 35.0, samples)
+    courier_exp_yrs = np.random.uniform(0.5, 8.0, samples)
+    
+    weather_opts = ['Sunny', 'Rainy', 'Foggy', 'Stormy']
+    weather = np.random.choice(weather_opts, samples, p=[0.5, 0.3, 0.15, 0.05])
+    
+    traffic_opts = ['Low', 'Medium', 'High', 'Jam']
+    traffic = np.random.choice(traffic_opts, samples, p=[0.25, 0.45, 0.2, 0.1])
+    
+    vehicle_opts = ['Scooter', 'Motorcycle', 'Electric Bike']
+    vehicle = np.random.choice(vehicle_opts, samples, p=[0.5, 0.4, 0.1])
+    
+    # Calculate delivery time formula with realistic physical factors
+    base_time = 8.0
+    transit_speed = np.where(vehicle == 'Electric Bike', 2.8, 2.3) # mins per km
+    
+    weather_delay = np.where(weather == 'Rainy', 7, np.where(weather == 'Foggy', 5, np.where(weather == 'Stormy', 14, 0)))
+    traffic_delay = np.where(traffic == 'Medium', 4, np.where(traffic == 'High', 10, np.where(traffic == 'Jam', 18, 0)))
+    exp_discount = courier_exp_yrs * 0.6
+    
+    noise = np.random.normal(0, 3, samples)
+    
+    delivery_time_min = (
+        base_time + 
+        (distance_km * transit_speed) + 
+        prep_time_min + 
+        weather_delay + 
+        traffic_delay - 
+        exp_discount + 
+        noise
+    )
+    
+    df = pd.DataFrame({
+        'distance_km': np.round(distance_km, 2),
+        'prep_time_min': np.round(prep_time_min, 1),
+        'courier_exp_yrs': np.round(courier_exp_yrs, 1),
+        'weather': weather,
+        'traffic_level': traffic,
+        'vehicle_type': vehicle,
+        'delivery_time_min': np.round(np.clip(delivery_time_min, 12, 120), 1)
+    })
+    
+    os.makedirs('data', exist_ok=True)
+    df.to_csv('data/zomato_delivery_data.csv', index=False)
+    return df
 
 
 def train_and_evaluate():
-    file_path = download_dataset()
-    df = pd.read_csv(file_path)
+    df = generate_food_delivery_data()
 
-    # 1. Clean Data & Targets
-    df['TotalCharges'] = pd.to_numeric(df['TotalCharges'], errors='coerce')
-    df['Churn'] = df['Churn'].apply(lambda x: 1 if str(x).strip().lower() == 'yes' else 0)
+    X = df.drop(columns=['delivery_time_min'])
+    y = df['delivery_time_min']
 
-    # Selected practical features for app input
-    feature_cols = [
-        'tenure', 'MonthlyCharges', 'TotalCharges', 
-        'Contract', 'PaymentMethod', 'InternetService', 
-        'TechSupport', 'OnlineSecurity', 'PaperlessBilling'
-    ]
-    
-    X = df[feature_cols]
-    y = df['Churn']
+    num_features = ['distance_km', 'prep_time_min', 'courier_exp_yrs']
+    cat_features = ['weather', 'traffic_level', 'vehicle_type']
 
-    num_features = ['tenure', 'MonthlyCharges', 'TotalCharges']
-    cat_features = ['Contract', 'PaymentMethod', 'InternetService', 'TechSupport', 'OnlineSecurity', 'PaperlessBilling']
-
-    # 2. Robust Sub-Pipelines with Imputers to automatically fill any NaNs
     num_pipeline = Pipeline(steps=[
         ('imputer', SimpleImputer(strategy='median')),
         ('scaler', StandardScaler())
@@ -71,55 +91,42 @@ def train_and_evaluate():
         ]
     )
 
-    # Train-test split (80/20) with stratification
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
+        X, y, test_size=0.2, random_state=42
     )
 
-    # 3. Model 1: Logistic Regression (Exp 2)
+    # Model 1: Multivariate Linear Regression (Exp 1)
     lr_pipeline = Pipeline(steps=[
         ('preprocessor', preprocessor),
-        ('classifier', LogisticRegression(max_iter=1000, random_state=42))
+        ('regressor', LinearRegression())
     ])
     lr_pipeline.fit(X_train, y_train)
 
-    # 4. Model 2: Random Forest Ensemble (Exp 4)
+    # Model 2: Random Forest Regressor Ensemble (Exp 4)
     rf_pipeline = Pipeline(steps=[
         ('preprocessor', preprocessor),
-        ('classifier', RandomForestClassifier(n_estimators=150, max_depth=10, random_state=42))
+        ('regressor', RandomForestRegressor(n_estimators=100, max_depth=12, random_state=42))
     ])
     rf_pipeline.fit(X_train, y_train)
 
-    # 5. Evaluate and Print Results
-    print("\n" + "="*50)
-    print("MODEL EVALUATION RESULTS")
-    print("="*50)
-
+    # Evaluation
     lr_preds = lr_pipeline.predict(X_test)
-    lr_probs = lr_pipeline.predict_proba(X_test)[:, 1]
-    lr_auc = roc_auc_score(y_test, lr_probs)
-    lr_acc = accuracy_score(y_test, lr_preds)
-
     rf_preds = rf_pipeline.predict(X_test)
-    rf_probs = rf_pipeline.predict_proba(X_test)[:, 1]
-    rf_auc = roc_auc_score(y_test, rf_probs)
-    rf_acc = accuracy_score(y_test, rf_preds)
 
-    print(f"\n1. LOGISTIC REGRESSION (Exp 2):")
-    print(f"   Accuracy: {lr_acc * 100:.2f}%")
-    print(f"   ROC-AUC:  {lr_auc:.4f}")
-
-    print(f"\n2. RANDOM FOREST ENSEMBLE (Exp 4):")
-    print(f"   Accuracy: {rf_acc * 100:.2f}%")
-    print(f"   ROC-AUC:  {rf_auc:.4f}")
-
-    print("\nDetailed Classification Report (Random Forest):")
-    print(classification_report(y_test, rf_preds))
-
-    # 6. Save Best Model Pipeline
-    joblib.dump(rf_pipeline, 'churn_model.pkl')
+    print("\n" + "="*50)
+    print("FOOD DELIVERY TIME MODEL EVALUATION")
     print("="*50)
-    print(" Best pipeline saved successfully as 'churn_model.pkl'")
+    print(f"\n1. MULTIVARIATE LINEAR REGRESSION (Exp 1):")
+    print(f"   Mean Absolute Error (MAE): {mean_absolute_error(y_test, lr_preds):.2f} mins")
+    print(f"   R2 Score:                  {r2_score(y_test, lr_preds):.4f}")
+
+    print(f"\n2. RANDOM FOREST ENSEMBLE REGRESSOR (Exp 4):")
+    print(f"   Mean Absolute Error (MAE): {mean_absolute_error(y_test, rf_preds):.2f} mins")
+    print(f"   R2 Score:                  {r2_score(y_test, rf_preds):.4f}")
+
+    joblib.dump(rf_pipeline, 'delivery_model.pkl')
+    print("="*50)
+    print(" Production model saved successfully as 'delivery_model.pkl'")
     print("="*50)
 
 
